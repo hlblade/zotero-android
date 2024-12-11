@@ -1,0 +1,146 @@
+name: Daily Build Zotero Android
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Check if rebuild is required 
+    runs-on: ubuntu-latest
+    outputs:
+      commit_hash: ${{ steps.get-latest-commit.outputs.short_commit }}
+      need_build: ${{ steps.cache-hash.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: "zotero/zotero-android"
+
+      - name: Get Latest Commit Hash
+        id: get-latest-commit
+        run: |
+          latest_commit=$(git rev-parse HEAD)
+          echo "Latest commit: $latest_commit"
+          echo "latest_commit=$latest_commit" >> $GITHUB_OUTPUT
+          
+          short_commit=${latest_commit::7}
+          echo "short_commit: $short_commit"
+          echo "short_commit=$short_commit" >> $GITHUB_OUTPUT
+
+      - name: Get Last Commit Hash from Cache
+        id: cache-hash
+        uses: actions/cache@v4
+        with:
+          path: last_commit
+          key: zotero-android-commit-hash-${{ steps.get-latest-commit.outputs.latest_commit }}
+
+      - name: Write New Commit hash to Cache
+        if: ${{ steps.cache-hash.outputs.cache-hit != 'true' }}
+        run: |
+          echo "$latest_commit" > ./last_commit
+
+  build:
+    name: Build the APP
+    needs:
+      - check
+    if: ${{ needs.check.outputs.need_build == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          repository: "zotero/zotero-android"
+
+      - name: set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: "17"
+          distribution: "zulu"
+          cache: gradle
+
+      - name: set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # - name: Writing PSPDFKIT's key into a file to be then picked up by gradle.
+      #   run: echo ${{secrets.PSPDFKIT_KEY}} | sed 's/./& /g' > pspdfkit-key.txt
+
+      # - name: Decrypt Keystore
+      #   run: openssl aes-256-cbc -d -in .github/keystore.cipher -k ${{secrets.SIGNING_KEY}} -md sha256 > zotero.release.keystore
+
+      # - name: Decrypt Keystore secrets
+      #   run: openssl aes-256-cbc -d -in .github/keystore-secrets.cipher -k ${{secrets.SIGNING_KEY}} -md sha256 > keystore-secrets.txt
+
+      - name: Grant execute permission for bundle_translators.py
+        run: chmod +x scripts/bundle_translators.py
+
+      - name: Execute bundle_translators.py
+        run: python3 scripts/bundle_translators.py
+
+      - name: Grant execute permission for bundle_translation.py
+        run: chmod +x scripts/bundle_translation.py
+
+      - name: Execute bundle_translation.py
+        run: python3 scripts/bundle_translation.py
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Download Android dependencies
+        run: ./gradlew androidDependencies --no-configuration-cache
+
+      # - name: Deploy to Google Play Internal Test Track
+      #   run: ./gradlew --no-configuration-cache -PpreDexLibs=false publishInternalReleaseBundle --stacktrace
+
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-outputs
+          path: app/build/outputs
+
+  release:
+    name: Upload the dist to GitHub release
+    needs:
+      - check
+      - build
+    if: ${{ needs.check.outputs.need_build == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-outputs
+          path: app/build/outputs
+
+      - name: get version name
+        id: metadata
+        uses: ActionsTools/read-json-action@main
+        with:
+          file_path: "app/build/outputs/apk/dev/debug/output-metadata.json"
+          prop_path: 'elements[0].versionName'
+
+      - run: |
+          echo ${{ steps.metadata.outputs.value }}
+          echo ${{ needs.check.outputs.commit_hash }}
+          mv app/build/outputs/apk/dev/debug/app-dev-debug.apk app/build/outputs/apk/dev/debug/app-dev-debug-${{ steps.metadata.outputs.value }}-${{ needs.check.outputs.commit_hash }}.apk
+
+      - name: Create release
+        # if: ${{ steps.metadata.outputs.elements[0].versionName != steps.latest_release.outputs.tag_name }}
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.metadata.outputs.value }}
+          makeLatest: true
+          allowUpdates: true
+          name: ${{ steps.metadata.outputs.value }}
+          body: 'Please see https://github.com/zotero/zotero-android/commits/master/ for changelog.'
+          artifacts: "app/build/outputs/apk/dev/debug/*.apk"
+          token: ${{ secrets.GITHUB_TOKEN }}
