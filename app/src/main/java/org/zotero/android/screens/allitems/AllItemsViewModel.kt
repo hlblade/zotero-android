@@ -68,10 +68,12 @@ import org.zotero.android.screens.dashboard.data.ShowDashboardLongPressBottomShe
 import org.zotero.android.screens.filter.data.FilterArgs
 import org.zotero.android.screens.filter.data.FilterReloadEvent
 import org.zotero.android.screens.filter.data.FilterResult
+import org.zotero.android.screens.filter.data.UpdateFiltersEvent
 import org.zotero.android.screens.itemdetails.data.DetailType
 import org.zotero.android.screens.itemdetails.data.ItemDetailsArgs
 import org.zotero.android.screens.mediaviewer.image.ImageViewerArgs
 import org.zotero.android.screens.mediaviewer.video.VideoPlayerArgs
+import org.zotero.android.screens.retrievemetadata.data.RetrieveMetadataArgs
 import org.zotero.android.screens.sortpicker.data.SortPickerArgs
 import org.zotero.android.sync.Collection
 import org.zotero.android.sync.CollectionIdentifier
@@ -177,8 +179,9 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     private fun showItemDetail(type: DetailType, library: Library) {
-        ScreenArguments.itemDetailsArgs = ItemDetailsArgs(type, library = library, childKey = null)
-        triggerEffect(AllItemsViewEffect.ShowItemDetailEffect)
+        val args = ItemDetailsArgs(type, library = library, childKey = null)
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+        triggerEffect(AllItemsViewEffect.ShowItemDetailEffect(encodedArgs))
     }
 
     fun init(isTablet: Boolean) = initOnce {
@@ -206,9 +209,6 @@ internal class AllItemsViewModel @Inject constructor(
             searchTerm = searchTerm
         )
 
-        if (isTablet) {
-            initShowFilterArgs()
-        }
     }
 
     override fun show(attachment: Attachment, library: Library) {
@@ -466,16 +466,18 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     private fun showNoteCreation(title: AddOrEditNoteArgs.TitleData?, libraryId: LibraryIdentifier) {
-        ScreenArguments.addOrEditNoteArgs = AddOrEditNoteArgs(
-            text = "",
-            tags = listOf(),
+        val args = AddOrEditNoteArgs(
             title = title,
             key = KeyGenerator.newKey(),
             libraryId = libraryId,
             readOnly = false,
             isFromDashboard = true,
         )
-        triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect)
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(
+            data = args,
+            charset = StandardCharsets.UTF_8
+        )
+        triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect(encodedArgs))
     }
 
     private fun showItemDetail(item: RItem) {
@@ -485,26 +487,29 @@ internal class AllItemsViewModel @Inject constructor(
                 if (note == null) {
                     return
                 }
-                val tags = item.tags!!.map({ Tag(tag = it) })
                 val library = this.library
-                ScreenArguments.addOrEditNoteArgs = AddOrEditNoteArgs(
-                    text = note.text,
-                    tags = tags,
+                val args = AddOrEditNoteArgs(
                     title = null,
                     libraryId = library.identifier,
                     readOnly = !library.metadataEditable,
                     key = note.key,
                     isFromDashboard = true
                 )
-                triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect)
+                val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(
+                    data = args,
+                    charset = StandardCharsets.UTF_8
+                )
+                triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect(encodedArgs))
             }
+
             else -> {
-                ScreenArguments.itemDetailsArgs = ItemDetailsArgs(
+                val args = ItemDetailsArgs(
                     DetailType.preview(key = item.key),
                     library = this.library,
                     childKey = null
                 )
-                triggerEffect(AllItemsViewEffect.ShowItemDetailEffect)
+                val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+                triggerEffect(AllItemsViewEffect.ShowItemDetailEffect(encodedArgs))
             }
         }
     }
@@ -629,6 +634,7 @@ internal class AllItemsViewModel @Inject constructor(
                 filters = viewState.filters + filter
             )
         }
+        EventBus.getDefault().post(UpdateFiltersEvent(viewState.filters))
         allItemsProcessor.filter(searchTerm = viewState.searchTerm, filters = viewState.filters)
     }
 
@@ -642,6 +648,7 @@ internal class AllItemsViewModel @Inject constructor(
                 filters = viewState.filters - filter
             )
         }
+        EventBus.getDefault().post(UpdateFiltersEvent(viewState.filters))
         allItemsProcessor.filter(searchTerm = viewState.searchTerm, filters = viewState.filters)
     }
 
@@ -649,21 +656,11 @@ internal class AllItemsViewModel @Inject constructor(
         if (isTablet) {
             onShowDownloadedFilesPopupClicked()
         } else {
-            initShowFilterArgs()
-            triggerEffect(AllItemsViewEffect.ShowFilterEffect)
+            val args = createShowFilterArgs()
+            val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+            triggerEffect(AllItemsViewEffect.ShowPhoneFilterEffect(encodedArgs))
         }
 
-    }
-
-    private fun initShowFilterArgs() {
-        val selectedTags =
-            viewState.filters.filterIsInstance<ItemsFilter.tags>().flatMap { it.tags }.toSet()
-        ScreenArguments.filterArgs = FilterArgs(
-            filters = viewState.filters,
-            collectionId = this.collection.identifier,
-            libraryId = this.library.identifier,
-            selectedTags = selectedTags
-        )
     }
 
     private fun onLongPressOptionsItemSelected(longPressOptionItem: LongPressOptionItem) {
@@ -698,6 +695,14 @@ internal class AllItemsViewModel @Inject constructor(
                 is LongPressOptionItem.TrashRestore -> {
                     set(trashed = false, setOf(longPressOptionItem.item.key))
                 }
+
+                is LongPressOptionItem.RetrieveMetadata -> {
+                    showRetrieveMetadataDialog(
+                        itemKey = longPressOptionItem.item.key,
+                        libraryId = longPressOptionItem.item.libraryId!!
+                    )
+                }
+
                 else -> {}
             }
         }
@@ -715,6 +720,16 @@ internal class AllItemsViewModel @Inject constructor(
         )
         triggerEffect(AllItemsViewEffect.ShowCollectionPickerEffect)
     }
+
+    private fun showRetrieveMetadataDialog(itemKey: String, libraryId: LibraryIdentifier) {
+        val args = RetrieveMetadataArgs(
+            itemKey = itemKey,
+            libraryId = libraryId,
+        )
+        val params = navigationParamsMarshaller.encodeObjectToBase64(args)
+        triggerEffect(AllItemsViewEffect.ShowRetrieveMetadataDialogEffect(params))
+    }
+
 
     private fun createParent(item: RItem) {
         val key = item.key
@@ -753,6 +768,12 @@ internal class AllItemsViewModel @Inject constructor(
         }
 
         val actions = mutableListOf<LongPressOptionItem>()
+
+        val attachment = allItemsProcessor.attachment(item.key, null)
+        val contentType = (attachment?.first?.type as? Attachment.Kind.file)?.contentType
+        if (item.rawType == ItemTypes.attachment && item.parent == null && contentType == "application/pdf") {
+            actions.add(LongPressOptionItem.RetrieveMetadata(item))
+        }
 
         if (item.rawType == ItemTypes.attachment && item.parent == null) {
             actions.add(LongPressOptionItem.CreateParentItem(item))
@@ -1081,6 +1102,18 @@ internal class AllItemsViewModel @Inject constructor(
         triggerEffect(ShowScanBarcode)
     }
 
+    private fun createShowFilterArgs(): FilterArgs {
+        val selectedTags =
+            viewState.filters.filterIsInstance<ItemsFilter.tags>().flatMap { it.tags }.toSet()
+        val filterArgs = FilterArgs(
+            filters = viewState.filters,
+            collectionId = this.collection.identifier,
+            libraryId = this.library.identifier,
+            selectedTags = selectedTags
+        )
+        return filterArgs
+    }
+
 }
 
 internal data class AllItemsViewState(
@@ -1140,13 +1173,13 @@ internal data class AllItemsViewState(
 
 internal sealed class AllItemsViewEffect : ViewEffect {
     object ShowCollectionsEffect: AllItemsViewEffect()
-    object ShowItemDetailEffect: AllItemsViewEffect()
-    object ShowAddOrEditNoteEffect: AllItemsViewEffect()
+    data class ShowItemDetailEffect(val screenArgs: String): AllItemsViewEffect()
+    data class ShowAddOrEditNoteEffect(val screenArgs: String): AllItemsViewEffect()
     object ShowItemTypePickerEffect : AllItemsViewEffect()
     data class ShowAddByIdentifierEffect(val params: String) : AllItemsViewEffect()
     object ShowSortPickerEffect : AllItemsViewEffect()
     object ShowCollectionPickerEffect: AllItemsViewEffect()
-    object ShowFilterEffect : AllItemsViewEffect()
+    data class ShowPhoneFilterEffect(val params: String) : AllItemsViewEffect()
     data class OpenWebpage(val uri: Uri) : AllItemsViewEffect()
     data class OpenFile(val file: File, val mimeType: String) : AllItemsViewEffect()
     data class ShowZoteroWebView(val url: String): AllItemsViewEffect()
@@ -1155,4 +1188,5 @@ internal sealed class AllItemsViewEffect : ViewEffect {
     data class NavigateToPdfScreen(val params: String) : AllItemsViewEffect()
     object ScreenRefresh : AllItemsViewEffect()
     object ShowScanBarcode: AllItemsViewEffect()
+    data class ShowRetrieveMetadataDialogEffect(val params: String) : AllItemsViewEffect()
 }

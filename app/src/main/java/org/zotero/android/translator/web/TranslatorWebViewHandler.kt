@@ -34,6 +34,7 @@ class TranslatorWebViewHandler @Inject constructor(
     private val nonZoteroApi: NonZoteroApi,
 ) {
     private val uiMainCoroutineScope = CoroutineScope(dispatchers.main)
+    private var wasPageAlreadyFullyLoaded: Boolean = false
 
     private lateinit var webView: WebView
     private lateinit var webViewPort: WebMessagePort
@@ -77,6 +78,11 @@ class TranslatorWebViewHandler @Inject constructor(
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
+                    //Fix for onPageFinished getting called twice for some webpages
+                    if (wasPageAlreadyFullyLoaded || view.progress != 100) {
+                        return
+                    }
+                    wasPageAlreadyFullyLoaded = true
                     val channel = webView.createWebMessageChannel()
                     val port = channel[0]
                     this@TranslatorWebViewHandler.webViewPort = port
@@ -187,6 +193,7 @@ class TranslatorWebViewHandler @Inject constructor(
         if (this.referrer != null) {
             headers["Referer"] = this.referrer!!
         }
+
         if (this.cookies != null) {
             headers["Cookie"] = this.cookies!!
         }
@@ -200,6 +207,9 @@ class TranslatorWebViewHandler @Inject constructor(
                 }
 
                 "POST" -> {
+                    if (headers["Content-Type"] == null) {
+                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    }
                     nonZoteroApi.sendWebViewPost(
                         url = url,
                         headers = headers,

@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import org.greenrobot.eventbus.EventBus
 import org.zotero.android.architecture.BaseViewModel2
-import org.zotero.android.architecture.ScreenArguments
 import org.zotero.android.architecture.ViewEffect
 import org.zotero.android.architecture.ViewState
 import org.zotero.android.pdf.data.PDFSettings
@@ -18,6 +17,7 @@ import org.zotero.android.pdf.data.PageScrollDirection
 import org.zotero.android.pdf.data.PageScrollMode
 import org.zotero.android.pdf.data.PdfReaderCurrentThemeEventStream
 import org.zotero.android.pdf.data.PdfReaderThemeDecider
+import org.zotero.android.pdf.settings.data.PdfSettingsArgs
 import org.zotero.android.pdf.settings.data.PdfSettingsChangeResult
 import org.zotero.android.pdf.settings.data.PdfSettingsOptions
 import javax.inject.Inject
@@ -30,6 +30,7 @@ internal class PdfSettingsViewModel @Inject constructor(
 
     private lateinit var pdfSettings: PDFSettings
     private var pdfReaderThemeCancellable: Job? = null
+    lateinit var args: PdfSettingsArgs
 
     private fun startObservingTheme() {
         this.pdfReaderThemeCancellable = pdfReaderCurrentThemeEventStream.flow()
@@ -41,13 +42,13 @@ internal class PdfSettingsViewModel @Inject constructor(
             .launchIn(viewModelScope)
     }
 
-    fun init() {
+    fun init(args: PdfSettingsArgs) {
         initOnce {
             updateState {
                 copy(isDark = pdfReaderCurrentThemeEventStream.currentValue()!!.isDark)
             }
             startObservingTheme()
-            pdfSettings = ScreenArguments.pdfSettingsArgs.pdfSettings
+            pdfSettings = args.pdfSettings
             updateState {
                 copy(
                     selectedPageTransitionOption = convert(pdfSettings.transition),
@@ -99,7 +100,7 @@ internal class PdfSettingsViewModel @Inject constructor(
     }
 
     fun onOptionSelected(optionOrdinal: Int) {
-        val option = PdfSettingsOptions.values()[optionOrdinal]
+        val option = PdfSettingsOptions.entries[optionOrdinal]
 
         when (option) {
             PdfSettingsOptions.PageTransitionJump, PdfSettingsOptions.PageTransitionContinuous -> {
@@ -128,11 +129,11 @@ internal class PdfSettingsViewModel @Inject constructor(
                 }
             }
         }
-        sendChangedSettings(option)
+        updatePdfSettings(option)
 
     }
 
-    private fun sendChangedSettings(option: PdfSettingsOptions) {
+    private fun updatePdfSettings(option: PdfSettingsOptions) {
         when (option) {
             PdfSettingsOptions.PageTransitionJump -> {
                 pdfSettings.transition = PageScrollMode.JUMP
@@ -182,12 +183,14 @@ internal class PdfSettingsViewModel @Inject constructor(
                 pdfSettings.appearanceMode = PageAppearanceMode.AUTOMATIC
             }
         }
-
-        EventBus.getDefault().post(PdfSettingsChangeResult(pdfSettings))
     }
 
     fun setOsTheme(isDark: Boolean) {
         pdfReaderThemeDecider.setCurrentOsTheme(isOsThemeDark = isDark)
+    }
+
+    fun sendSettingsParams() {
+        EventBus.getDefault().post(PdfSettingsChangeResult(pdfSettings))
     }
 
 }
@@ -227,5 +230,4 @@ internal data class PdfSettingsViewState(
 }
 
 internal sealed class PdfSettingsViewEffect : ViewEffect {
-    object NavigateBack : PdfSettingsViewEffect()
 }

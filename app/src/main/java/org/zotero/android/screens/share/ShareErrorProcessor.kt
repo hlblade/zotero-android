@@ -8,6 +8,7 @@ import org.zotero.android.database.requests.ReadGroupDbRequest
 import org.zotero.android.sync.LibraryIdentifier
 import org.zotero.android.sync.Parsing
 import org.zotero.android.sync.SchemaError
+import org.zotero.android.sync.SyncActionError
 import org.zotero.android.translator.data.AttachmentState
 import org.zotero.android.translator.data.TranslationWebViewError
 import org.zotero.android.uicomponents.Strings
@@ -36,6 +37,9 @@ class ShareErrorProcessor @Inject constructor(
 
             AttachmentState.Error.downloadFailed -> {
                 context.getString(Strings.errors_shareext_download_failed)
+            }
+            AttachmentState.Error.proxiedUrlsNotSupported -> {
+                context.getString(Strings.errors_shareext_proxied_urls_not_supported)
             }
 
             AttachmentState.Error.downloadedFileNotPdf -> {
@@ -152,6 +156,11 @@ class ShareErrorProcessor @Inject constructor(
                 }
                 if (error is TranslationWebViewError) {
                     return AttachmentState.Error.webViewError(error)
+                }
+                if (error is SyncActionError.authorizationFailed) {
+                    if (libraryId != null) {
+                        return AttachmentState.Error.quotaLimit(libraryId)
+                    }
                 }
             }
 

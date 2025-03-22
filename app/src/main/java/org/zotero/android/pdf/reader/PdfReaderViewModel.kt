@@ -62,6 +62,7 @@ import io.realm.RealmResults
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
@@ -70,6 +71,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.internal.toHexString
 import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
@@ -86,6 +88,7 @@ import org.zotero.android.architecture.ViewEffect
 import org.zotero.android.architecture.ViewState
 import org.zotero.android.architecture.ifFailure
 import org.zotero.android.architecture.navigation.NavigationParamsMarshaller
+import org.zotero.android.architecture.navigation.toolbar.data.SyncProgressHandler
 import org.zotero.android.architecture.require
 import org.zotero.android.database.DbRequest
 import org.zotero.android.database.DbWrapperMain
@@ -197,6 +200,8 @@ class PdfReaderViewModel @Inject constructor(
     private val schemaController: SchemaController,
     private val dateParser: DateParser,
     private val navigationParamsMarshaller: NavigationParamsMarshaller,
+    private val dispatcher: CoroutineDispatcher,
+    private val progressHandler: SyncProgressHandler,
     stateHandle: SavedStateHandle,
 ) : BaseViewModel2<PdfReaderViewState, PdfReaderViewEffect>(PdfReaderViewState()), PdfReaderVMInterface {
 
@@ -280,13 +285,7 @@ class PdfReaderViewModel @Inject constructor(
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onEvent(pdfAnnotationCommentResult: PdfAnnotationCommentResult) {
         setComment(pdfAnnotationCommentResult.annotationKey, pdfAnnotationCommentResult.comment)
-        if (isTablet) {
-            // Fix for a bug where selecting an already selected annotation again didn't trigger Annotation Edit Popup/Screen.
-            // Unfortunately PSPDFKIT's onAnnotationSelected method is not triggered when user is selecting the same annotation again. Because technically the same annotation just stays selected.
-            // That's why after finishing annotation editing we have to make PSPDFKIT to deselect the currently selected annotation.
-            // Drawback to this is that of course visually annotation gets deselected as well.
-            this.pdfFragment.clearSelectedAnnotations()
-        }
+        clearSelectedAnnotations()
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
@@ -368,10 +367,8 @@ class PdfReaderViewModel @Inject constructor(
     private fun update(pdfSettings: PDFSettings) {
         defaults.setPDFSettings(pdfSettings)
         pdfReaderThemeDecider.setPdfPageAppearanceMode(pdfSettings.appearanceMode)
-        if (isTablet) {
-            pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
-            replaceFragment()
-        }
+        pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
+        replaceFragment()
     }
 
     private var pdfReaderThemeCancellable: Job? = null
@@ -481,7 +478,10 @@ class PdfReaderViewModel @Inject constructor(
         this@PdfReaderViewModel.pdfFragment.addDocumentListener(object :
             DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
-                this@PdfReaderViewModel.onDocumentLoaded(document)
+                progressHandler.muteProgressToolbarForScreen()
+                viewModelScope.launch {
+                    this@PdfReaderViewModel.onDocumentLoaded(document)
+                }
             }
 
             override fun onDocumentClick(): Boolean {
@@ -592,7 +592,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
 
-    private fun onDocumentLoaded(document: PdfDocument) {
+    private suspend fun onDocumentLoaded(document: PdfDocument) {
         this.document = document
         annotationBoundingBoxConverter = AnnotationBoundingBoxConverter(document)
         loadRawDocument()
@@ -786,11 +786,11 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
-    private fun loadAnnotations(
+    private suspend fun loadAnnotations(
         document: PdfDocument,
         username: String,
         displayName: String
-    ): Map<String, PDFDocumentAnnotation> {
+    ): Map<String, PDFDocumentAnnotation> = withContext(dispatcher){
         val annotations = mutableMapOf<String, PDFDocumentAnnotation>()
         val pdfAnnotations = document.annotationProvider
             .getAllAnnotationsOfTypeAsync(AnnotationsConfig.supported)
@@ -807,17 +807,15 @@ class PdfReaderViewModel @Inject constructor(
                 color = pdfAnnotation.color.toHexString(),
                 username = username,
                 displayName = displayName,
-                boundingBoxConverter = this.annotationBoundingBoxConverter
+                boundingBoxConverter = this@PdfReaderViewModel.annotationBoundingBoxConverter
             ) ?: continue
 
             annotations[annotation.key] = annotation
         }
-
-        return annotations
-
+        annotations
     }
 
-    private fun loadDocumentData() {
+    private suspend fun loadDocumentData() {
         val key = viewState.key
         val library = viewState.library
         val dbResult = loadAnnotationsAndPage(key = key, library = library)
@@ -826,7 +824,17 @@ class PdfReaderViewModel @Inject constructor(
             is CustomResult.GeneralSuccess -> {
                 this.liveAnnotations?.removeAllChangeListeners()
                 this.liveAnnotations = dbResult.value!!.first
-                val storedPage = dbResult.value!!.second
+                var storedPage = dbResult.value!!.second
+                //We have cases where presumably -1 was saved to DB as storedPage against some PDF documents causing a crash on PDF document open.
+                //Assumption is that PSPDFKIT's pageIndex method returned -1 for when it didn't have it's 'document' completely initialized when user returned to the app after a long time and immediately backed from PdfScreen
+                //-1 should no longer be saved as storedPage as 00950b1 commit should cover for it, by ensuring 'document' is not null
+                //But we still need to clean Database entries with -1 storedPage
+                if (storedPage == -1) {
+                    Timber.w("storedPage was found to be -1")
+                    storedPage = 0
+                    submitPendingPage(0)
+                }
+
                 observe(liveAnnotations!!)
                 this.databaseAnnotations = liveAnnotations!!.freeze()
                 val documentAnnotations = loadAnnotations(
@@ -850,12 +858,28 @@ class PdfReaderViewModel @Inject constructor(
 
                 update(
                     document = this.document,
-                    zoteroAnnotations = dbToPdfAnnotations,
+                    zoteroAnnotations = dbToPdfAnnotations.map { it.third },
                     key = key,
                     libraryId = library.identifier,
                     isDark = viewState.isDark
                 )
-                for (annotation in dbToPdfAnnotations) {
+
+                val cleanedDbToPdfAnnotations = dbToPdfAnnotations.mapNotNull { triple ->
+                    val libraryId = triple.first
+                    val rItemKey = triple.second
+                    val annotation = triple.third
+                    if (wasAnnotationsWithZeroSizeRemoved(
+                            libraryId = libraryId,
+                            rItemKey = rItemKey,
+                            annotation = annotation
+                        )
+                    ) {
+                        return@mapNotNull null
+                    }
+                    annotation
+                }
+
+                for (annotation in cleanedDbToPdfAnnotations) {
                     annotationPreviewManager.store(
                         rawDocument = this.rawDocument,
                         annotation = annotation,
@@ -921,6 +945,14 @@ class PdfReaderViewModel @Inject constructor(
         onAnnotationUpdatedListener = object :
             AnnotationProvider.OnAnnotationUpdatedListener {
             override fun onAnnotationCreated(annotation: Annotation) {
+                if (isAnnotationZeroSize(annotation)) {
+                    Timber.w("PdfReaderViewModel: Prevented an annotation of type ${annotation.type} from being created due to zero dimensions")
+                    this@PdfReaderViewModel.document.annotationProvider.removeAnnotationFromPage(
+                        annotation
+                    )
+                    return
+                }
+
                 processAnnotationObserving(annotation, emptyList(), PdfReaderNotification.PSPDFAnnotationsAdded)
             }
 
@@ -946,6 +978,42 @@ class PdfReaderViewModel @Inject constructor(
             }
         }
         pdfFragment.addOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+    }
+
+    private fun wasAnnotationsWithZeroSizeRemoved(
+        libraryId: LibraryIdentifier,
+        rItemKey: String,
+        annotation: Annotation
+    ): Boolean {
+        if (isAnnotationZeroSize(annotation)) {
+            this@PdfReaderViewModel.document.annotationProvider.removeAnnotationFromPage(
+                annotation
+            )
+            dbWrapperMain.realmDbStorage.perform(
+                MarkObjectsAsDeletedDbRequest(
+                    clazz = RItem::class,
+                    keys = listOf(rItemKey),
+                    libraryId = libraryId
+                )
+            )
+            return true
+        }
+        return false
+    }
+
+    private fun isAnnotationZeroSize(annotation: Annotation): Boolean {
+        val annotationRect = annotation.boundingBox
+        val width = (annotationRect.right - annotationRect.left).toInt()
+        val height = (annotationRect.top - annotationRect.bottom).toInt()
+        if (listOf(
+                AnnotationType.SQUARE,
+                AnnotationType.INK
+            ).contains(annotation.type) && (width == 0 || height == 0)
+        ) {
+            Timber.w("PdfReaderViewModel: Found an annotation of type ${annotation.type} having zero dimensions width=$width and height=$height")
+            return true
+        }
+        return false
     }
 
     private fun change(annotation: Annotation, changes: List<String>) {
@@ -1628,11 +1696,17 @@ class PdfReaderViewModel @Inject constructor(
         isLongPressOnTextAnnotation = false
         if (showAnnotationPopup) {
             annotationEditReaderKey = selectedAnnotation?.readerKey
-            ScreenArguments.pdfAnnotationArgs = PdfAnnotationArgs(
+            val pdfAnnotationArgs = PdfAnnotationArgs(
                 selectedAnnotation = selectedAnnotation,
                 userId = viewState.userId,
                 library = viewState.library
             )
+            ScreenArguments.pdfAnnotationArgs = pdfAnnotationArgs
+            if (!isTablet) {
+                updateState {
+                    copy(pdfAnnotationArgs = pdfAnnotationArgs)
+                }
+            }
         }
 
         val index = viewState.sortedKeys.indexOf(viewState.selectedAnnotationKey)
@@ -1731,6 +1805,14 @@ class PdfReaderViewModel @Inject constructor(
                 pdfFragment.clearSelectedAnnotations()
             }
         }
+    }
+
+    private fun clearSelectedAnnotations() {
+        // Fix for a bug where selecting an already selected annotation again didn't trigger Annotation Edit Popup/Screen.
+        // Unfortunately PSPDFKIT's onAnnotationSelected method is not triggered when user is selecting the same annotation again. Because technically the same annotation just stays selected.
+        // That's why after finishing annotation editing we have to make PSPDFKIT to deselect the currently selected annotation.
+        // Drawback to this is that of course visually annotation gets deselected as well.
+        this.pdfFragment.clearSelectedAnnotations()
     }
 
     override fun annotation(key: AnnotationKey): org.zotero.android.pdf.data.PDFAnnotation? {
@@ -1985,10 +2067,15 @@ class PdfReaderViewModel @Inject constructor(
         }
 
     override fun onCleared() {
+        progressHandler.unMuteProgressToolbarForScreen()
         fragmentManager.commit(allowStateLoss = true) {
             remove(this@PdfReaderViewModel.pdfUiFragment)
         }
-        pdfFragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+        if (this::pdfFragment.isInitialized) {
+            onAnnotationUpdatedListener?.let {
+                pdfFragment.removeOnAnnotationUpdatedListener(it)
+            }
+        }
 
         EventBus.getDefault().unregister(this)
         liveAnnotations?.removeAllChangeListeners()
@@ -2003,16 +2090,18 @@ class PdfReaderViewModel @Inject constructor(
         annotationPreviewManager.cancelProcessing()
         annotationPreviewFileCache.cancelProcessing()
         clearThumbnailCaches()
-        document.annotationProvider
-            .getAllAnnotationsOfTypeAsync(AnnotationsConfig.supported)
-            .toList()
-            .blockingGet()
-            .forEach {
-                this.document.annotationProvider.removeAnnotationFromPage(it)
-            }
-        val activity = pdfUiFragment.activity
-        if (activity != null) {
-            WindowCompat.getInsetsController(activity.window, activity.window.decorView).show(
+        if (this::document.isInitialized) {
+            document.annotationProvider
+                .getAllAnnotationsOfTypeAsync(AnnotationsConfig.supported)
+                .toList()
+                .blockingGet()
+                .forEach {
+                    this.document.annotationProvider.removeAnnotationFromPage(it)
+                }
+        }
+
+        pdfUiFragment.activity?.let {
+            WindowCompat.getInsetsController(it.window, it.window.decorView).show(
                 WindowInsetsCompat.Type.systemBars()
             )
         }
@@ -2285,8 +2374,15 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     fun navigateToPdfSettings() {
-        ScreenArguments.pdfSettingsArgs = PdfSettingsArgs(defaults.getPDFSettings())
-        triggerEffect(PdfReaderViewEffect.ShowPdfSettings)
+        val args = PdfSettingsArgs(defaults.getPDFSettings())
+        ScreenArguments.pdfSettingsArgs = args
+        if (isTablet) {
+            triggerEffect(PdfReaderViewEffect.ShowPdfSettings)
+        } else {
+            updateState {
+                copy(pdfSettingsArgs = args)
+            }
+        }
     }
 
     fun navigateToPlainReader() {
@@ -2327,6 +2423,14 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     fun onStop(isChangingConfigurations: Boolean) {
+        disableForceScreenOnTimer?.cancel()
+        if (!this::pdfFragment.isInitialized || this.pdfFragment.document == null) {
+            //If pdfFragment is not yet initialized and onStop is called the most likely cause is that user has returned to the app after a while hence ViewModel was deinitialized and then user either very quickly:
+            //1. Navigated to some other screen from PdfReaderScreen screen
+            //2. Navigated back from the PdfReaderScreen to AllItemsScreen
+            //In either of those cases the ViewModel can be caught in the process of re-initializing pdfFragment and since we are navigating away from PdfReaderScreen the execution of onStop method's contents is no longer needed
+            return
+        }
         pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
         submitPendingPage(pdfUiFragment.pageIndex)
         if (isChangingConfigurations) {
@@ -2376,16 +2480,19 @@ class PdfReaderViewModel @Inject constructor(
     private fun addDocumentListener2() {
         this.pdfFragment.addDocumentListener(object : DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
-                this@PdfReaderViewModel.onDocumentLoaded(document)
+                viewModelScope.launch {
+                    progressHandler.muteProgressToolbarForScreen()
 
-                if (queuedUpPdfReaderColorPickerResult != null) {
-                    setToolOptions(
-                        hex = queuedUpPdfReaderColorPickerResult!!.colorHex,
-                        size = queuedUpPdfReaderColorPickerResult!!.size,
-                        tool = queuedUpPdfReaderColorPickerResult!!.annotationTool
-                    )
-                    queuedUpPdfReaderColorPickerResult = null
+                    this@PdfReaderViewModel.onDocumentLoaded(document)
 
+                    if (queuedUpPdfReaderColorPickerResult != null) {
+                        setToolOptions(
+                            hex = queuedUpPdfReaderColorPickerResult!!.colorHex,
+                            size = queuedUpPdfReaderColorPickerResult!!.size,
+                            tool = queuedUpPdfReaderColorPickerResult!!.annotationTool
+                        )
+                        queuedUpPdfReaderColorPickerResult = null
+                    }
                 }
             }
 
@@ -3060,12 +3167,19 @@ class PdfReaderViewModel @Inject constructor(
 
     override fun onMoreOptionsForItemClicked() {
         annotationEditReaderKey = selectedAnnotation?.readerKey
-        ScreenArguments.pdfAnnotationMoreArgs = PdfAnnotationMoreArgs(
+        val args = PdfAnnotationMoreArgs(
             selectedAnnotation = selectedAnnotation,
             userId = viewState.userId,
             library = viewState.library
         )
-        triggerEffect(PdfReaderViewEffect.ShowPdfAnnotationMore)
+        ScreenArguments.pdfAnnotationMoreArgs = args
+        if (isTablet) {
+            triggerEffect(PdfReaderViewEffect.ShowPdfAnnotationMore)
+        } else {
+            updateState {
+                copy(pdfAnnotationMoreArgs = args)
+            }
+        }
     }
 
     private fun set(
@@ -3323,6 +3437,31 @@ class PdfReaderViewModel @Inject constructor(
 
     }
 
+    override fun hidePdfAnnotationView() {
+        clearSelectedAnnotations()
+        updateState {
+            copy(
+                pdfAnnotationArgs = null
+            )
+        }
+    }
+
+    override fun hidePdfAnnotationMoreView() {
+        updateState {
+            copy(
+                pdfAnnotationMoreArgs = null
+            )
+        }
+    }
+
+    override fun hidePdfSettingsView() {
+        updateState {
+            copy(
+                pdfSettingsArgs = null
+            )
+        }
+    }
+
     override fun hidePdfSearch() {
         updateState {
             copy(
@@ -3384,6 +3523,9 @@ data class PdfReaderViewState(
     val thumbnailRows: ImmutableList<PdfReaderThumbnailRow> = persistentListOf(),
     val selectedThumbnail: PdfReaderThumbnailRow? = null,
     val showPdfSearch: Boolean = false,
+    var pdfAnnotationArgs: PdfAnnotationArgs? = null,
+    var pdfAnnotationMoreArgs: PdfAnnotationMoreArgs? = null,
+    var pdfSettingsArgs: PdfSettingsArgs? = null,
 ) : ViewState {
 
     fun isAnnotationSelected(annotationKey: String): Boolean {

@@ -20,6 +20,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import org.zotero.android.architecture.ui.CustomLayoutSize
 import org.zotero.android.architecture.ui.ObserveLifecycleEvent
+import org.zotero.android.pdf.annotation.sidebar.PdfAnnotationNavigationView
+import org.zotero.android.pdf.annotationmore.sidebar.PdfAnnotationMoreNavigationView
+import org.zotero.android.pdf.settings.sidebar.PdfSettingsView
 import org.zotero.android.uicomponents.CustomScaffold
 import org.zotero.android.uicomponents.theme.CustomTheme
 import org.zotero.android.uicomponents.theme.CustomThemeWithStatusAndNavBars
@@ -40,9 +43,13 @@ internal fun PdfReaderScreen(
     val viewState by viewModel.viewStates.observeAsState(PdfReaderViewState())
     val viewEffect by viewModel.viewEffects.observeAsState()
     val activity = LocalContext.current as? AppCompatActivity ?: return
+    val currentView = LocalView.current
     ObserveLifecycleEvent { event ->
         when (event) {
-            Lifecycle.Event.ON_STOP -> { viewModel.onStop(activity.isChangingConfigurations) }
+            Lifecycle.Event.ON_STOP -> {
+                currentView.keepScreenOn = false
+                viewModel.onStop(activity.isChangingConfigurations)
+            }
             else -> {}
         }
     }
@@ -63,7 +70,6 @@ internal fun PdfReaderScreen(
         val thumbnailsLazyListState = rememberLazyListState()
         val layoutType = CustomLayoutSize.calculateLayoutType()
         val focusManager = LocalFocusManager.current
-        val currentView = LocalView.current
         LaunchedEffect(key1 = viewEffect) {
             when (val consumedEffect = viewEffect?.consume()) {
                 is PdfReaderViewEffect.NavigateBack -> {
@@ -86,10 +92,9 @@ internal fun PdfReaderScreen(
 
                 is PdfReaderViewEffect.ShowPdfAnnotationAndUpdateAnnotationsList -> {
                     if (consumedEffect.showAnnotationPopup) {
-                        if (!layoutType.isTablet()) {
-                            viewModel.removeFragment()
+                        if (layoutType.isTablet()) {
+                            navigateToPdfAnnotation()
                         }
-                        navigateToPdfAnnotation()
                     }
                     if (consumedEffect.scrollToIndex != -1) {
                         annotationsLazyListState.animateScrollToItem(index = consumedEffect.scrollToIndex)
@@ -105,10 +110,9 @@ internal fun PdfReaderScreen(
                 }
 
                 is PdfReaderViewEffect.ShowPdfAnnotationMore -> {
-                    if (!layoutType.isTablet()) {
-                        viewModel.removeFragment()
+                    if (layoutType.isTablet()) {
+                        navigateToPdfAnnotationMore()
                     }
-                    navigateToPdfAnnotationMore()
                 }
 
                 is PdfReaderViewEffect.ShowPdfSettings -> {
@@ -190,7 +194,9 @@ internal fun PdfReaderScreen(
                 )
             }
         }
+        PdfAnnotationNavigationView(viewState = viewState, viewModel = viewModel)
+        PdfAnnotationMoreNavigationView(viewState = viewState, viewModel = viewModel)
+        PdfSettingsView(viewState = viewState, viewModel = viewModel)
     }
 
 }
-

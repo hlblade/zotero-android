@@ -37,4 +37,14 @@
     <string name="collection_remove_downloads">Remove Downloads</string>
     <string name="collection_empty_trash">Empty Trash</string>
 
+    <string name="items.action.retrieve_metadata">Retrieve Metadata</string>
+
+    <string name="retrieve_metadata_dialog_title">Metadata Retrieval</string>
+    <string name="retrieve_metadata_status_no_results">Status: recognition yielded no results</string>
+
+    <string name="retrieve_metadata_error_failed_to_initialize">Failed to initialize</string>
+
+    <string name="sync_snackbar_view_action">View</string>
+
+    <string name="errors.shareext.proxied_urls_not_supported">Proxied URLs are not currently supported</string>
 </resources>

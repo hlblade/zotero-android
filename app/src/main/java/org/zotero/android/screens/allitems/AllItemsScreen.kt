@@ -2,14 +2,12 @@ package org.zotero.android.screens.allitems
 
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
-import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,14 +39,15 @@ internal fun AllItemsScreen(
     navigateToCollectionsScreen: () -> Unit,
     navigateToSinglePicker: () -> Unit,
     navigateToAddByIdentifier: (addByIdentifierParams: String) -> Unit,
+    navigateToRetrieveMetadata: (params: String) -> Unit,
     navigateToAllItemsSort: () -> Unit,
     navigateToCollectionPicker: () -> Unit,
-    navigateToItemDetails: () -> Unit,
-    navigateToAddOrEditNote: () -> Unit,
+    navigateToItemDetails: (String) -> Unit,
+    navigateToAddOrEditNote: (String) -> Unit,
     navigateToVideoPlayerScreen: () -> Unit,
     navigateToImageViewerScreen: () -> Unit,
     navigateToZoterWebViewScreen: (String) -> Unit,
-    navigateToTagFilter: () -> Unit,
+    navigateToTagFilter: (params: String) -> Unit,
     navigateToScanBarcode: () -> Unit,
     onShowPdf: (String) -> Unit,
 ) {
@@ -65,10 +64,10 @@ internal fun AllItemsScreen(
             when (val consumedEffect = viewEffect?.consume()) {
                 null -> Unit
                 is AllItemsViewEffect.ShowCollectionsEffect -> navigateToCollectionsScreen()
-                is AllItemsViewEffect.ShowItemDetailEffect -> navigateToItemDetails()
-                is AllItemsViewEffect.ShowAddOrEditNoteEffect -> navigateToAddOrEditNote()
-                AllItemsViewEffect.ShowFilterEffect -> {
-                    navigateToTagFilter()
+                is AllItemsViewEffect.ShowItemDetailEffect -> navigateToItemDetails(consumedEffect.screenArgs)
+                is AllItemsViewEffect.ShowAddOrEditNoteEffect -> navigateToAddOrEditNote(consumedEffect.screenArgs)
+                is AllItemsViewEffect.ShowPhoneFilterEffect -> {
+                    navigateToTagFilter(consumedEffect.params)
                 }
 
                 AllItemsViewEffect.ShowItemTypePickerEffect -> {
@@ -77,6 +76,10 @@ internal fun AllItemsScreen(
 
                 is AllItemsViewEffect.ShowAddByIdentifierEffect -> {
                     navigateToAddByIdentifier(consumedEffect.params)
+                }
+
+                is AllItemsViewEffect.ShowRetrieveMetadataDialogEffect -> {
+                    navigateToRetrieveMetadata(consumedEffect.params)
                 }
 
                 AllItemsViewEffect.ShowSortPickerEffect -> {
@@ -131,7 +134,7 @@ internal fun AllItemsScreen(
             val refreshing = viewState.isRefreshing
             val pullRefreshState = rememberPullRefreshState(refreshing, { viewModel.startSync() })
 
-            Box(Modifier.pullRefresh(pullRefreshState)) {
+
                 BaseLceBox(
                     modifier = Modifier.fillMaxSize(),
                     lce = viewState.lce,
@@ -168,6 +171,7 @@ internal fun AllItemsScreen(
                             layoutType = layoutType,
                             itemCellModels = viewState.itemCellModels,
                             isEditing = viewState.isEditing,
+                            pullRefreshState = pullRefreshState,
                             isItemSelected = viewState::isSelected,
                             getItemAccessory = viewState::getAccessoryForItem,
                             onItemTapped = viewModel::onItemTapped,
@@ -175,7 +179,6 @@ internal fun AllItemsScreen(
                             onItemLongTapped = viewModel::onItemLongTapped
                         )
                     }
-                }
 
                 val itemsError = viewState.error
                 if (itemsError != null) {

@@ -5,12 +5,14 @@ import android.net.Uri
 import android.webkit.MimeTypeMap
 import androidx.core.net.toFile
 import androidx.core.net.toUri
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.realm.ObjectChangeSet
 import io.realm.RealmObjectChangeListener
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.launchIn
@@ -30,7 +32,9 @@ import org.zotero.android.architecture.ScreenArguments
 import org.zotero.android.architecture.ViewEffect
 import org.zotero.android.architecture.ViewState
 import org.zotero.android.architecture.ifFailure
+import org.zotero.android.architecture.navigation.ARG_ITEM_DETAILS_SCREEN
 import org.zotero.android.architecture.navigation.NavigationParamsMarshaller
+import org.zotero.android.architecture.require
 import org.zotero.android.attachmentdownloader.AttachmentDownloader
 import org.zotero.android.attachmentdownloader.AttachmentDownloaderEventStream
 import org.zotero.android.database.DbRequest
@@ -138,7 +142,13 @@ class ItemDetailsViewModel @Inject constructor(
     private val dateParser: DateParser,
     private val context: Context,
     private val navigationParamsMarshaller: NavigationParamsMarshaller,
+    stateHandle: SavedStateHandle,
 ) : BaseViewModel2<ItemDetailsViewState, ItemDetailsViewEffect>(ItemDetailsViewState()) {
+
+    val screenArgs: ItemDetailsArgs by lazy {
+        val argsEncoded = stateHandle.get<String>(ARG_ITEM_DETAILS_SCREEN).require()
+        navigationParamsMarshaller.decodeObjectFromBase64(argsEncoded)
+    }
 
     private var coroutineScope = CoroutineScope(dispatcher)
 
@@ -205,14 +215,13 @@ class ItemDetailsViewModel @Inject constructor(
 
     fun init() = initOnce {
         EventBus.getDefault().register(this)
-        setupFileObservers()
-        setupOnFieldValueTextChangeFlow()
-        setupOnAbstractTextChangeFlow()
+            initViewState(screenArgs)
 
-        val args = ScreenArguments.itemDetailsArgs
+            setupFileObservers()
+            setupOnFieldValueTextChangeFlow()
+            setupOnAbstractTextChangeFlow()
 
-        initViewState(args)
-        loadInitialData()
+            loadInitialData()
     }
 
     private fun setupFileObservers() {
@@ -257,6 +266,8 @@ class ItemDetailsViewModel @Inject constructor(
         EventBus.getDefault().unregister(this)
         conflictResolutionUseCase.currentlyDisplayedItemLibraryIdentifier = null
         conflictResolutionUseCase.currentlyDisplayedItemKey = null
+
+        coroutineScope.cancel()
         super.onCleared()
     }
 
@@ -1108,16 +1119,18 @@ class ItemDetailsViewModel @Inject constructor(
         val title =
             AddOrEditNoteArgs.TitleData(type = viewState.data.type, title = viewState.data.title)
 
-        ScreenArguments.addOrEditNoteArgs = AddOrEditNoteArgs(
-            text = note?.text ?: "",
-            tags = note?.tags ?: listOf(),
+        val args = AddOrEditNoteArgs(
             title = title,
             key = key,
             libraryId = library.identifier,
             readOnly = !library.metadataEditable,
             isFromDashboard = false
         )
-        triggerEffect(ShowAddOrEditNoteEffect)
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(
+            data = args,
+            charset = StandardCharsets.UTF_8
+        )
+        triggerEffect(ShowAddOrEditNoteEffect(encodedArgs))
     }
 
     private suspend fun saveNote(text: String, tags: List<Tag>, key: String) {
@@ -2086,7 +2099,7 @@ sealed class ItemDetailsViewEffect : ViewEffect {
     object ShowItemTypePickerEffect : ItemDetailsViewEffect()
     object ScreenRefresh : ItemDetailsViewEffect()
     object OnBack : ItemDetailsViewEffect()
-    object ShowAddOrEditNoteEffect : ItemDetailsViewEffect()
+    data class ShowAddOrEditNoteEffect(val screenArgs: String) : ItemDetailsViewEffect()
     object ShowVideoPlayer : ItemDetailsViewEffect()
     object ShowImageViewer : ItemDetailsViewEffect()
     data class OpenFile(val file: File, val mimeType: String) : ItemDetailsViewEffect()

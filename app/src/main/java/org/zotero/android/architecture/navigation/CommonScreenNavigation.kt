@@ -5,8 +5,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.slideInHorizontally
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavType
-import androidx.navigation.navArgument
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import org.zotero.android.screens.addnote.AddNoteScreen
 import org.zotero.android.screens.allitems.AllItemsScreen
 import org.zotero.android.screens.collections.CollectionsScreen
@@ -18,17 +18,23 @@ import org.zotero.android.screens.mediaviewer.video.VideoPlayerView
 import org.zotero.android.screens.webview.ZoteroWebViewScreen
 import java.io.File
 
+internal const val ARG_ITEM_DETAILS_SCREEN = "itemDetailsArgs"
+internal const val ARG_RETRIEVE_METADATA = "retrieveMetadataArgs"
+internal const val ARG_TAGS_FILTER = "tagsScreen"
+internal const val ARG_ADD_OR_EDIT_NOTE = "notesScreen"
+
 fun NavGraphBuilder.allItemsScreen(
     navigateToCollectionsScreen: () -> Unit,
-    navigateToItemDetails: () -> Unit,
-    navigateToAddOrEditNote: () -> Unit,
+    navigateToItemDetails: (String) -> Unit,
+    navigateToAddOrEditNote: (String) -> Unit,
     navigateToSinglePicker: () -> Unit,
     navigateToAllItemsSort: () -> Unit,
     navigateToAddByIdentifier: (addByIdentifierParams: String) -> Unit,
+    navigateToRetrieveMetadata: (params: String) -> Unit,
     navigateToVideoPlayerScreen: () -> Unit,
     navigateToImageViewerScreen: () -> Unit,
     navigateToZoterWebViewScreen: (String) -> Unit,
-    navigateToTagFilter: () -> Unit,
+    navigateToTagFilter: (params: String) -> Unit,
     navigateToCollectionPicker: () -> Unit,
     navigateToScanBarcode: () -> Unit,
     onOpenFile: (file: File, mimeType: String) -> Unit,
@@ -57,6 +63,7 @@ fun NavGraphBuilder.allItemsScreen(
             navigateToTagFilter = navigateToTagFilter,
             navigateToCollectionPicker = navigateToCollectionPicker,
             navigateToScanBarcode = navigateToScanBarcode,
+            navigateToRetrieveMetadata = navigateToRetrieveMetadata,
         )
     }
 }
@@ -66,7 +73,7 @@ fun NavGraphBuilder.itemDetailsScreen(
     navigateToCreatorEdit: () -> Unit,
     navigateToTagPicker: () -> Unit,
     navigateToSinglePicker: () -> Unit,
-    navigateToAddOrEditNote: () -> Unit,
+    navigateToAddOrEditNote: (String) -> Unit,
     navigateToVideoPlayerScreen: () -> Unit,
     navigateToImageViewerScreen: () -> Unit,
     navigateToZoterWebViewScreen: (String) -> Unit,
@@ -75,9 +82,12 @@ fun NavGraphBuilder.itemDetailsScreen(
     onPickFile: () -> Unit,
     onShowPdf: (String) -> Unit,
 ) {
+
     composable(
-        route = CommonScreenDestinations.ITEM_DETAILS,
-        arguments = listOf(),
+        route = "${CommonScreenDestinations.ITEM_DETAILS}/{$ARG_ITEM_DETAILS_SCREEN}",
+        arguments = listOf(
+            navArgument(ARG_ITEM_DETAILS_SCREEN) { type = NavType.StringType },
+        ),
     ) {
         ItemDetailsScreen(
             onBack = onBack,
@@ -101,8 +111,10 @@ fun NavGraphBuilder.addNoteScreen(
     navigateToTagPicker: () -> Unit,
 ) {
     composable(
-        route = CommonScreenDestinations.ADD_NOTE,
-        arguments = listOf(),
+        route = "${CommonScreenDestinations.ADD_NOTE}/{$ARG_ADD_OR_EDIT_NOTE}",
+        arguments = listOf(
+            navArgument(ARG_ADD_OR_EDIT_NOTE) { type = NavType.StringType },
+        ),
     ) {
         AddNoteScreen(
             onBack = onBack,
@@ -200,12 +212,12 @@ object CommonScreenDestinations {
 }
 
 
-fun ZoteroNavigation.toItemDetails() {
-    navController.navigate(CommonScreenDestinations.ITEM_DETAILS)
+fun ZoteroNavigation.toItemDetails(args: String) {
+    navController.navigate("${CommonScreenDestinations.ITEM_DETAILS}/$args")
 }
 
-fun ZoteroNavigation.toAddOrEditNote() {
-    navController.navigate(CommonScreenDestinations.ADD_NOTE)
+fun ZoteroNavigation.toAddOrEditNote(args: String) {
+    navController.navigate("${CommonScreenDestinations.ADD_NOTE}/$args")
 }
 
 fun ZoteroNavigation.toVideoPlayerScreen() {
